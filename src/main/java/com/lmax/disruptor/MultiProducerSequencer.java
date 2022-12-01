@@ -270,17 +270,37 @@ public final class MultiProducerSequencer extends AbstractSequencer
 		// 使用缓存增加了复杂度
         do
         {
+            //这里设计的很巧妙。
+            // 1、获取当前生产者进度
             current = cursor.get();
+            // 2、获取生产者想要申请的空间下标(当前进度+申请的长度)
             next = current + n;
 
             // 可能构成环路的点/环形缓冲区可能追尾的点 = 请求的序号 - 环形缓冲区大小
+            // 3、生产者申请的空间下标-空间长度
             long wrapPoint = next - bufferSize;
-            // 缓存的消费者们的最慢进度值，小于等于真实进度
+            // 4、缓存的消费者们的最慢进度值，小于等于真实进度
             long cachedGatingSequence = gatingSequenceCache.get();
 
             // 第一步：空间不足就继续等待。
             // 1.wrapPoint > cachedGatingSequence 表示生产者追上消费者产生环路，上次看见的序号缓存无效，
             // 即缓冲区已满，此时需要获取消费者们最新的进度，以确定是否队列满。
+            // 例如：bufferSize = 1024，在第一环未满【生产者申请的sequence <= 1023】的时候，next - bufferSize < 0的。
+            // 而cachedGatingSequence一直是 -1。那说明，生产者还未追上消费者。
+            // 当生产者申请的下标是 1024的时候，wrapPoint = 0,cachedGatingSequence = -1。
+            // 这个时候就会更新 缓存最慢消费者进度。
+            // long gatingSequence = Util.getMinimumSequence(gatingSequences, current);
+            // gatingSequences 就是最慢消费者的进度。
+            // 情况一：
+            // [handler-1]->[handler-2] 那么gatingSequences就是handler-2的进度
+            // 情况二：
+            //              [handler-2]
+            // [handler-1]->                             那么gatingSequences就是handler-2、handler-3 进度最小的。也即gatingSequences会存在竞争
+            //              [handler-3]
+            // 情况三：
+            //              [handler-2]
+            // [handler-1]->            ->[handler-4]    那么gatingSequences就是handler-4 进度最小的。
+            //              [handler-3]
             // 2.cachedGatingSequence > current   表示消费者的进度大于当前生产者进度，表示current无效，有以下可能：
             // 2.1 其它生产者发布了数据，并更新了gatingSequenceCache，并已被消费
             // （当前线程进入该方法时可能被挂起，重新恢复调度时看见一个更大值）。
